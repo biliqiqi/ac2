@@ -4,6 +4,16 @@ English | [中文](README.zh.md)
 
 A command-line toolkit for proxying Claude Code and Gemini CLI, enabling web-based interaction. Also supports MCP-based cross-calling between different AI agents.
 
+## Table of Contents
+
+- [Installation](#installation)
+  - [Download Precompiled Binaries (Recommended)](#download-precompiled-binaries-recommended)
+  - [Install via go install](#install-via-go-install)
+  - [Build from Source](#build-from-source)
+- [Usage](#usage)
+  - [Web Terminal](#web-terminal)
+  - [MCP Integration](#mcp-integration)
+
 ## Installation
 
 ### Download Precompiled Binaries (Recommended)
