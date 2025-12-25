@@ -25,6 +25,10 @@ jobs:
       with:
         go-version: '1.24'
 
+    - name: Install webterm dependencies
+      working-directory: ./internal/webterm
+      run: npm ci
+
     - name: Run golangci-lint
       uses: golangci/golangci-lint-action@v8
       with:
