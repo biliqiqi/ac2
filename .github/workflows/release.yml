@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Run Tests
+    uses: ./.github/workflows/test.yml
+
+  build:
+    name: Build and Release
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+
+    - name: Build binaries
+      run: |
+        # Linux amd64
+        GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o ac2-linux-amd64 ./cmd/ac2
+
+        # Linux arm64
+        GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o ac2-linux-arm64 ./cmd/ac2
+
+        # macOS amd64
+        GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o ac2-darwin-amd64 ./cmd/ac2
+
+        # macOS arm64 (Apple Silicon)
+        GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o ac2-darwin-arm64 ./cmd/ac2
+
+        # Windows amd64
+        GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o ac2-windows-amd64.exe ./cmd/ac2
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          ac2-linux-amd64
+          ac2-linux-arm64
+          ac2-darwin-amd64
+          ac2-darwin-arm64
+          ac2-windows-amd64.exe
+        body: |
+          ## Installation
+
+          ### Linux/macOS
+          ```bash
+          # Download
+          wget https://github.com/biliqiqi/ac2/releases/download/${{ github.ref_name }}/ac2-linux-amd64
+
+          # Make executable
+          chmod +x ac2-linux-amd64
+
+          # Run
+          ./ac2-linux-amd64
+          ```
+
+          ### Windows
+          Download `ac2-windows-amd64.exe` and run from command prompt.
+
+          ### Using go install
+          ```bash
+          go install github.com/biliqiqi/ac2@${{ github.ref_name }}
+          ```
+        draft: false
+        prerelease: false
