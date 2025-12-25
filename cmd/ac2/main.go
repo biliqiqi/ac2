@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/biliqiqi/ac2/internal/detector"
@@ -223,24 +222,6 @@ func findAvailablePort(startPort int, maxRetries int) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("no available port found from %d to %d", startPort, startPort+maxRetries-1)
-}
-
-func flushStdin() {
-	// Set non-blocking
-	_ = syscall.SetNonblock(int(os.Stdin.Fd()), true)
-	defer func() {
-		// Restore blocking mode
-		_ = syscall.SetNonblock(int(os.Stdin.Fd()), false)
-	}()
-
-	buf := make([]byte, 1024)
-	for {
-		// Read until error (EAGAIN/EWOULDBLOCK) or EOF
-		n, err := os.Stdin.Read(buf)
-		if n <= 0 || err != nil {
-			break
-		}
-	}
 }
 
 func promptWebAuth() (string, string, error) {
