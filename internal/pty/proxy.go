@@ -1,6 +1,7 @@
 package pty
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"os/exec"
@@ -53,8 +54,9 @@ type Proxy struct {
 	onOutput func([]byte)
 	onExit   func(error)
 
-	handlers   map[string]*OutputHandler
-	handlersMu sync.RWMutex
+	handlers       map[string]*OutputHandler
+	handlersMu     sync.RWMutex
+	autoRespondDSR bool
 }
 
 func NewProxy(command string, args ...string) *Proxy {
@@ -76,6 +78,10 @@ func (p *Proxy) SetOutputHandler(handler func([]byte)) {
 
 func (p *Proxy) SetExitHandler(handler func(error)) {
 	p.onExit = handler
+}
+
+func (p *Proxy) SetAutoRespondDSR(enable bool) {
+	p.autoRespondDSR = enable
 }
 
 func (p *Proxy) AddOutputHandler(id string, handler func([]byte)) {
@@ -128,6 +134,9 @@ func (p *Proxy) Start(size *pty.Winsize) error {
 
 func (p *Proxy) readLoop() {
 	buf := make([]byte, 4096)
+	dsr := []byte("\x1b[6n")
+	dsrPrivate := []byte("\x1b[?6n")
+	dsrReply := []byte("\x1b[1;1R")
 	for {
 		n, err := p.ptmx.Read(buf)
 		if err != nil {
@@ -139,6 +148,9 @@ func (p *Proxy) readLoop() {
 		if n > 0 {
 			data := make([]byte, n)
 			copy(data, buf[:n])
+			if p.autoRespondDSR && (bytes.Contains(data, dsr) || bytes.Contains(data, dsrPrivate)) {
+				_, _ = p.ptmx.Write(dsrReply)
+			}
 
 			// Call legacy handler for backward compatibility
 			if p.onOutput != nil {

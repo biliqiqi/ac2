@@ -235,12 +235,16 @@ func (s *Server) Stop() error {
 
 	s.clientsMu.Lock()
 	clientCount := len(s.clients)
-	logger.Printf("WebServer.Stop: closing %d client(s)", clientCount)
-	for id, client := range s.clients {
-		logger.Printf("WebServer.Stop: closing client %s", id)
-		client.Close()
+	clients := make([]*Client, 0, clientCount)
+	for _, client := range s.clients {
+		clients = append(clients, client)
 	}
 	s.clientsMu.Unlock()
+	logger.Printf("WebServer.Stop: closing %d client(s)", clientCount)
+	for _, client := range clients {
+		logger.Printf("WebServer.Stop: closing client %s", client.id)
+		client.Close()
+	}
 	logger.Printf("WebServer.Stop: all clients closed")
 
 	if s.httpServer != nil {

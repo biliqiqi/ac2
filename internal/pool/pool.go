@@ -62,6 +62,7 @@ type AgentOption func(*agentOptions)
 type agentOptions struct {
 	outputSink io.Writer
 	quiet      bool
+	autoDSR    bool
 }
 
 func WithOutputSink(sink io.Writer) AgentOption {
@@ -73,6 +74,12 @@ func WithOutputSink(sink io.Writer) AgentOption {
 func WithQuiet(quiet bool) AgentOption {
 	return func(opts *agentOptions) {
 		opts.quiet = quiet
+	}
+}
+
+func WithAutoRespondDSR(enable bool) AgentOption {
+	return func(opts *agentOptions) {
+		opts.autoDSR = enable
 	}
 }
 
@@ -141,6 +148,12 @@ func (p *AgentPool) setupCodexMCP(quiet bool) error {
 
 func (p *AgentPool) buildMCPEnv(agentType string, quiet bool) []string {
 	env := []string{}
+	if p.mcpAddr == "" {
+		if !quiet {
+			logger.Printf("%s env: MCP server disabled (empty address)", agentType)
+		}
+		return env
+	}
 
 	switch agentType {
 	case "claude":
@@ -239,6 +252,7 @@ func (p *AgentPool) GetOrCreate(agentType string, opts ...AgentOption) (*AgentIn
 	}
 
 	proxy := ptyproxy.NewProxy(agentInfo.Command)
+	proxy.SetAutoRespondDSR(options.autoDSR)
 
 	// Inject MCP environment variables (if needed)
 	mcpEnv := p.buildMCPEnv(agentType, options.quiet)
@@ -261,6 +275,15 @@ func (p *AgentPool) GetOrCreate(agentType string, opts ...AgentOption) (*AgentIn
 	proxy.SetExitHandler(func(err error) {
 		if err != nil {
 			instance.Status = StatusError
+			logger.Printf("Agent %s exited: %v", instance.ID, err)
+			instance.OutputMu.Lock()
+			tail := tailOutput(instance.OutputBuffer, 4096)
+			instance.OutputMu.Unlock()
+			if tail != "" {
+				logger.Printf("Agent %s last output (tail):\n%s", instance.ID, tail)
+			} else {
+				logger.Printf("Agent %s last output (tail): <empty>", instance.ID)
+			}
 		} else {
 			instance.Status = StatusStopped
 		}
@@ -308,6 +331,17 @@ func (p *AgentPool) ListAll() []AgentInfo {
 	}
 
 	return result
+}
+
+func tailOutput(buf *bytes.Buffer, limit int) string {
+	if buf == nil || limit <= 0 {
+		return ""
+	}
+	data := buf.Bytes()
+	if len(data) <= limit {
+		return string(data)
+	}
+	return string(data[len(data)-limit:])
 }
 
 func (p *AgentPool) GetAvailableAgents() []detector.AgentInfo {

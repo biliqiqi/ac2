@@ -25,6 +25,8 @@ var (
 	webPort    int
 	webUser    string
 	webPass    string
+	noTUI      bool
+	pidFile    string
 )
 
 func main() {
@@ -42,14 +44,18 @@ func main() {
 		Short: "Agents COOP - Multi-agent collaboration framework",
 		RunE:  run,
 	}
+	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
 	rootCmd.Flags().StringVarP(&entryAgent, "entry", "e", "", "entry agent (claude, codex, gemini)")
 	rootCmd.Flags().IntVar(&webPort, "web-port", 8080, "web terminal port")
 	rootCmd.Flags().StringVar(&webUser, "web-user", "", "web terminal username for Basic Auth")
 	rootCmd.Flags().StringVar(&webPass, "web-pass", "", "web terminal password for Basic Auth")
+	rootCmd.Flags().BoolVar(&noTUI, "no-tui", false, "run without local TUI (web terminal only)")
+	rootCmd.PersistentFlags().StringVar(&pidFile, "pid-file", defaultPIDFile, "pid file path for no-tui mode")
 
 	// Add subcommands
 	rootCmd.AddCommand(getMCPStdioCmd())
+	rootCmd.AddCommand(getStopCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -107,6 +113,9 @@ func run(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("agent '%s' not found", entryAgent)
 		}
 	} else {
+		if noTUI {
+			return fmt.Errorf("--no-tui requires --entry")
+		}
 		fmt.Printf("Web terminal will listen at http://localhost:%d\n\n", webPort)
 		fmt.Println("Select entry agent:")
 		for _, a := range agents {
@@ -131,9 +140,11 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Drain any residual input (like 'j' or 'Enter' from the selector)
-	flushStdin()
+	if !noTUI {
+		flushStdin()
+	}
 
-	if webUser == "" && webPass == "" {
+	if webUser == "" && webPass == "" && !noTUI {
 		user, pass, err := promptWebAuth()
 		if err != nil {
 			return err
@@ -146,7 +157,13 @@ func run(cmd *cobra.Command, args []string) error {
 	agentPool := pool.NewAgentPool(available, "")
 
 	// Create initial agent instance
-	mainAgent, err := agentPool.GetOrCreate(string(entry.Type), pool.WithOutputSink(os.Stdout))
+	options := []pool.AgentOption{}
+	if !noTUI {
+		options = append(options, pool.WithOutputSink(os.Stdout))
+	} else {
+		options = append(options, pool.WithAutoRespondDSR(true))
+	}
+	mainAgent, err := agentPool.GetOrCreate(string(entry.Type), options...)
 	if err != nil {
 		return fmt.Errorf("failed to create entry agent: %w", err)
 	}
@@ -181,6 +198,11 @@ func run(cmd *cobra.Command, args []string) error {
 		lines = append(lines, "Auth: None (use --web-user and --web-pass)")
 	}
 	printBox(lines)
+
+	if noTUI {
+		logger.Printf("Main: starting no-tui mode")
+		return runHeadless(agentPool, mainAgent, webServer, pidFile)
+	}
 
 	// Start Passthrough TUI
 	logger.Printf("Main: starting Passthrough TUI")
