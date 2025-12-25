@@ -27,6 +27,16 @@ jobs:
       with:
         go-version: '1.24'
 
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install web terminal dependencies
+      run: |
+        cd internal/webterm
+        npm ci
+
     - name: Build binaries
       run: |
         # Linux amd64
