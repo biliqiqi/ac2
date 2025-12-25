@@ -18,6 +18,8 @@ const indexHTMLTemplate = `<!DOCTYPE html>
             --ink-muted: #6a635b;
             --terminal-bg: #1e1e1e;
             --terminal-panel: #262424;
+            --terminal-focus-border: #3a7bd5;
+            --terminal-focus-glow: rgba(58, 123, 213, 0.4);
             --status-ok: #2e7d32;
             --status-warn: #b26a00;
             --status-bad: #b3261e;
@@ -104,20 +106,33 @@ const indexHTMLTemplate = `<!DOCTYPE html>
         #terminal-container {
             flex: 1;
             padding: 4px;
-            overflow: hidden;
+            overflow: auto;
             background: var(--terminal-bg);
             min-height: 0;
+            -webkit-overflow-scrolling: touch;
+            position: relative;
+            border: 1px solid transparent;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        #terminal-container:focus-within {
+            border-color: var(--terminal-focus-border);
+            box-shadow: 0 0 0 1px var(--terminal-focus-border), 0 0 18px var(--terminal-focus-glow);
         }
         #terminal-container .xterm {
             height: 100%;
+            min-width: max-content;
         }
         #terminal-container .xterm-viewport {
-            overflow-y: auto !important;
+            overflow-y: scroll !important;
+            overflow-x: hidden !important;
             -webkit-overflow-scrolling: touch;
             overscroll-behavior: contain;
-            touch-action: pan-y;
+            touch-action: pan-y pan-x !important;
             position: relative;
             z-index: 1;
+        }
+        #terminal-container .xterm-screen {
+            touch-action: pan-y pan-x !important;
         }
         #status {
             padding: 4px 8px;
@@ -190,9 +205,9 @@ const indexHTMLTemplate = `<!DOCTYPE html>
         }
         @media (max-width: 720px) {
             #info-bar {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 4px;
+                flex-direction: row;
+                align-items: center;
+                gap: 8px;
                 padding: 8px 12px;
             }
         }
@@ -210,13 +225,21 @@ const indexHTMLTemplate = `<!DOCTYPE html>
             .shortcuts {
                 display: none;
             }
+            #terminal-container {
+                overflow: auto;
+                -webkit-overflow-scrolling: touch;
+            }
             #terminal-container .xterm-viewport {
                 border: 1px solid rgba(31, 29, 26, 0.15);
                 overflow-y: scroll !important;
+                overflow-x: hidden !important;
                 -webkit-overflow-scrolling: touch;
             }
             #terminal-container .xterm-screen {
-                touch-action: pan-y;
+                touch-action: pan-y pan-x !important;
+            }
+            #terminal-container .xterm-rows {
+                touch-action: pan-y pan-x !important;
             }
         }
         /* Fullscreen mode styles */
@@ -373,7 +396,41 @@ const indexHTMLTemplate = `<!DOCTYPE html>
         term.loadAddon(fitAddon);
 
         term.open(document.getElementById('terminal-container'));
-        fitAddon.fit();
+
+        // Enable touch scrolling on mobile devices
+        const terminalContainer = document.getElementById('terminal-container');
+        if (terminalContainer) {
+            // Ensure touch events can scroll the viewport
+            const viewport = terminalContainer.querySelector('.xterm-viewport');
+            if (viewport) {
+                // Prevent xterm from interfering with touch scroll
+                viewport.addEventListener('touchstart', function(e) {
+                    // Allow native scrolling behavior
+                }, { passive: true });
+
+                viewport.addEventListener('touchmove', function(e) {
+                    // Allow native scrolling behavior
+                }, { passive: true });
+            }
+        }
+
+        // Smart fit: use fixed columns on portrait mobile to enable horizontal scroll
+        function smartFit() {
+            const isPortrait = window.matchMedia('(orientation: portrait)').matches;
+            const isMobile = window.matchMedia('(max-width: 768px)').matches;
+
+            if (isPortrait && isMobile) {
+                // Use fixed columns on portrait mobile to preserve layout
+                const container = document.getElementById('terminal-container');
+                const rows = Math.floor((container.clientHeight - 8) / 17); // Approximate row height
+                term.resize(120, rows > 0 ? rows : 24); // Fixed 120 columns
+            } else {
+                // Use auto-fit on desktop and landscape mobile
+                fitAddon.fit();
+            }
+        }
+
+        smartFit();
 
         const status = document.getElementById('status');
         const agentName = document.getElementById('agent-name');
@@ -521,7 +578,7 @@ const indexHTMLTemplate = `<!DOCTYPE html>
                 document.body.classList.remove('fullscreen-mode');
                 fullscreenBtn.textContent = 'Fullscreen';
             }
-            setTimeout(() => fitAddon.fit(), 100);
+            setTimeout(() => smartFit(), 100);
         });
 
         function applyModifiers(data) {
@@ -606,7 +663,12 @@ const indexHTMLTemplate = `<!DOCTYPE html>
         });
 
         window.addEventListener('resize', () => {
-            fitAddon.fit();
+            smartFit();
+        });
+
+        // Listen for orientation changes on mobile
+        window.addEventListener('orientationchange', () => {
+            setTimeout(() => smartFit(), 200);
         });
 
         document.getElementById('btn-reconnect').addEventListener('click', manualReconnect);

@@ -2,7 +2,10 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 	"syscall"
@@ -10,7 +13,6 @@ import (
 
 	"github.com/biliqiqi/ac2/internal/detector"
 	"github.com/biliqiqi/ac2/internal/logger"
-	"github.com/biliqiqi/ac2/internal/mcp"
 	"github.com/biliqiqi/ac2/internal/pool"
 	"github.com/biliqiqi/ac2/internal/tui"
 	"github.com/biliqiqi/ac2/internal/webterm"
@@ -82,6 +84,16 @@ func run(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// Check and find available port before displaying to user
+	availablePort, err := findAvailablePort(webPort, 10)
+	if err != nil {
+		return err
+	}
+	if availablePort != webPort {
+		fmt.Printf("\033[33mWarning: Port %d is already in use, will use port %d instead\033[0m\n\n", webPort, availablePort)
+		webPort = availablePort
+	}
+
 	var entry *detector.AgentInfo
 
 	if entryAgent != "" {
@@ -130,40 +142,14 @@ func run(cmd *cobra.Command, args []string) error {
 		webPass = pass
 	}
 
-	// MCP Server HTTP address
-	mcpAddr := "http://localhost:3721"
-	mcpListenAddr := "localhost:3721"
-
-	// Create Agent Pool with MCP address
-	agentPool := pool.NewAgentPool(available, mcpAddr)
+	// Create Agent Pool (no MCP HTTP server needed)
+	agentPool := pool.NewAgentPool(available, "")
 
 	// Create initial agent instance
 	mainAgent, err := agentPool.GetOrCreate(string(entry.Type), pool.WithOutputSink(os.Stdout))
 	if err != nil {
 		return fmt.Errorf("failed to create entry agent: %w", err)
 	}
-
-	// Start MCP Server in background
-	logger.Printf("Creating MCP server...")
-	mcpServer := mcp.NewServer(agentPool)
-	logger.Printf("MCP server created successfully")
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				logger.Printf("MCP Server panic: %v", r)
-			}
-		}()
-		logger.Printf("Starting MCP server on %s...", mcpListenAddr)
-		if err := mcpServer.ListenHTTP(mcpListenAddr); err != nil {
-			logger.Printf("MCP Server error: %v", err)
-		}
-	}()
-
-	// Wait a moment for MCP server to start
-	logger.Println("Waiting for MCP server to start...")
-	time.Sleep(100 * time.Millisecond)
-	logger.Println("MCP server should be running now")
 
 	// Start Web Terminal Server (always enabled)
 	webServer := webterm.NewServer(webPort, webUser, webPass, mainAgent.Name)
@@ -172,13 +158,17 @@ func run(cmd *cobra.Command, args []string) error {
 			if r := recover(); r != nil {
 				logger.Printf("Web Terminal Server panic: %v", r)
 			}
+			logger.Printf("Web Terminal Server goroutine exiting")
 		}()
-		logger.Printf("Starting Web Terminal server on port %d...", webPort)
-		if err := webServer.Start(mainAgent.Proxy); err != nil {
+		logger.Printf("Web Terminal Server goroutine started, listening on port %d...", webPort)
+		if err := webServer.Start(mainAgent.Proxy); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Printf("Web Terminal Server error: %v", err)
 		}
+		logger.Printf("Web Terminal Server gracefully stopped")
 	}()
+	logger.Printf("Waiting 100ms for Web Terminal server to start...")
 	time.Sleep(100 * time.Millisecond)
+	logger.Printf("Web Terminal server should be running now")
 
 	// Display Web Terminal info
 	lines := []string{
@@ -193,8 +183,24 @@ func run(cmd *cobra.Command, args []string) error {
 	printBox(lines)
 
 	// Start Passthrough TUI
-	pt := tui.NewPassthrough(agentPool, mainAgent, mcpAddr, webServer)
-	return pt.Run()
+	logger.Printf("Main: starting Passthrough TUI")
+	pt := tui.NewPassthrough(agentPool, mainAgent, "", webServer)
+	err = pt.Run()
+	logger.Printf("Main: Passthrough TUI returned with err=%v", err)
+	logger.Printf("Main: run() function returning, all defers will execute")
+	return err
+}
+
+func findAvailablePort(startPort int, maxRetries int) (int, error) {
+	for i := 0; i < maxRetries; i++ {
+		port := startPort + i
+		listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		if err == nil {
+			_ = listener.Close()
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("no available port found from %d to %d", startPort, startPort+maxRetries-1)
 }
 
 func flushStdin() {
@@ -217,7 +223,7 @@ func flushStdin() {
 
 func promptWebAuth() (string, string, error) {
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Web terminal auth (optional). Username (leave empty for no auth): ")
+	fmt.Print("Web terminal auth username(leave empty for no auth): ")
 	user, err := reader.ReadString('\n')
 	if err != nil {
 		return "", "", err
@@ -227,7 +233,7 @@ func promptWebAuth() (string, string, error) {
 		return "", "", nil
 	}
 
-	fmt.Print("Password (leave empty for no auth): ")
+	fmt.Print("password: ")
 	passBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Println()
 	if err != nil {

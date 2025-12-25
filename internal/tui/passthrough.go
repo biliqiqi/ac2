@@ -49,6 +49,7 @@ type WebTerminalServer interface {
 	BroadcastReset()
 	ListClients() []webterm.ClientInfo
 	DisconnectClient(id string) error
+	Stop() error
 }
 
 func NewPassthrough(agentPool *pool.AgentPool, mainAgent *pool.AgentInstance, mcpSocketPath string, webServer WebTerminalServer) *Passthrough {
@@ -76,7 +77,6 @@ func (p *Passthrough) Run() error {
 	if err != nil {
 		return fmt.Errorf("failed to set raw mode: %w", err)
 	}
-	defer p.restoreTerminal()
 
 	// Attach current agent output to stdout for interactive mode
 	p.currentAgent.SetOutputSink(os.Stdout)
@@ -88,12 +88,72 @@ func (p *Passthrough) Run() error {
 	signal.Notify(sigwinch, syscall.SIGWINCH)
 	go p.handleResize(sigwinch)
 
+	// Handle interrupt signals (Ctrl+C, SIGTERM)
+	sigint := make(chan os.Signal, 1)
+	signal.Notify(sigint, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		logger.Printf("Passthrough.Run: signal handler goroutine started")
+		sig := <-sigint
+		logger.Printf("Passthrough.Run: received signal: %v, calling stop()", sig)
+		p.stop()
+		logger.Printf("Passthrough.Run: signal handler calling stop() completed")
+	}()
+
 	// Start stdin loop
 	go p.readLoop()
 
 	// Wait for exit
+	logger.Printf("Passthrough.Run: waiting for quit signal...")
 	<-p.quit
-	fmt.Print("\n")
+	logger.Printf("Passthrough.Run: quit signal received, starting shutdown sequence")
+
+	// Detach current agent output to prevent mixing with shutdown messages
+	logger.Printf("Passthrough.Run: detaching current agent output")
+	p.mu.Lock()
+	if p.currentAgent != nil {
+		logger.Printf("Passthrough.Run: current agent is %s, detaching output sink", p.currentAgent.ID)
+		p.currentAgent.SetOutputSink(nil)
+	} else {
+		logger.Printf("Passthrough.Run: no current agent to detach")
+	}
+	p.mu.Unlock()
+
+	// Give a moment for any pending output to flush
+	logger.Printf("Passthrough.Run: waiting 50ms for output to flush")
+	time.Sleep(50 * time.Millisecond)
+
+	// Restore terminal before showing exit message
+	logger.Printf("Passthrough.Run: restoring terminal state")
+	p.restoreTerminal()
+	logger.Printf("Passthrough.Run: terminal state restored")
+
+	// Show visible shutdown message
+	fmt.Println("\nShutting down...")
+
+	// Shutdown web server
+	if p.webServer != nil {
+		logger.Printf("Passthrough.Run: stopping web terminal server...")
+		err := p.webServer.Stop()
+		if err != nil {
+			logger.Printf("Passthrough.Run: web server stop error: %v", err)
+		} else {
+			logger.Printf("Passthrough.Run: web server stopped successfully")
+		}
+	} else {
+		logger.Printf("Passthrough.Run: no web server to stop")
+	}
+
+	// Shutdown all agents with visible progress
+	if p.agentPool != nil {
+		logger.Printf("Passthrough.Run: shutting down agent pool...")
+		_ = p.agentPool.Shutdown()
+		logger.Printf("Passthrough.Run: agent pool shutdown complete")
+	} else {
+		logger.Printf("Passthrough.Run: no agent pool to shutdown")
+	}
+
+	fmt.Println("Goodbye!")
+	logger.Printf("Passthrough.Run: shutdown sequence complete, returning nil")
 	return nil
 }
 
@@ -161,8 +221,11 @@ func (p *Passthrough) readLoop() {
 				start = i + 1
 
 			case keyCtrlQ:
-				p.stop()
-				return
+				logger.Printf("readLoop: Ctrl+Q detected, showing quit confirmation")
+				if p.confirmQuit() {
+					logger.Printf("readLoop: stop() completed, returning from readLoop")
+					return
+				}
 			}
 		}
 
@@ -210,10 +273,57 @@ func (p *Passthrough) enterControlMode() {
 	action := ctrl.Run()
 
 	// Handle action
+	if p.handleControlAction(action) {
+		return
+	}
+
+	// Return to raw mode
+	var err error
+	p.oldState, err = term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		p.stop()
+	}
+	p.mu.Lock()
+	p.inputPaused = false
+	p.mu.Unlock()
+}
+
+func (p *Passthrough) confirmQuit() bool {
+	p.mu.Lock()
+	p.inputPaused = true
+	p.mu.Unlock()
+
+	// Restore terminal for TUI
+	if p.oldState != nil {
+		_ = term.Restore(int(os.Stdin.Fd()), p.oldState)
+	}
+
+	// Show quit confirmation
+	ctrl := NewControlMode(p.agentPool, p.currentAgent, p)
+	action := ctrl.RunExitConfirm()
+
+	if p.handleControlAction(action) {
+		return true
+	}
+
+	// Return to raw mode
+	var err error
+	p.oldState, err = term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		p.stop()
+		return true
+	}
+	p.mu.Lock()
+	p.inputPaused = false
+	p.mu.Unlock()
+	return false
+}
+
+func (p *Passthrough) handleControlAction(action Action) bool {
 	switch action.Type {
 	case ActionQuit:
 		p.stop()
-		return
+		return true
 	case ActionSwitch:
 		p.mu.Lock()
 		p.switching = true
@@ -227,7 +337,7 @@ func (p *Passthrough) enterControlMode() {
 		// Stop current agent
 		if p.currentAgent != nil && p.currentAgent.Proxy != nil {
 			logger.Printf("ActionSwitch: stopping current agent %s", p.currentAgent.ID)
-			
+
 			// Mark as stopped immediately to prevent reuse if switching to same type
 			p.currentAgent.Status = pool.StatusStopped
 			_ = p.currentAgent.Proxy.Stop()
@@ -256,7 +366,7 @@ func (p *Passthrough) enterControlMode() {
 			p.switching = false
 			p.mu.Unlock()
 			p.stop()
-			return
+			return true
 		}
 
 		// Update main agent reference if we are replacing the main entry point
@@ -290,15 +400,7 @@ func (p *Passthrough) enterControlMode() {
 		p.mu.Unlock()
 	}
 
-	// Return to raw mode
-	var err error
-	p.oldState, err = term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		p.stop()
-	}
-	p.mu.Lock()
-	p.inputPaused = false
-	p.mu.Unlock()
+	return false
 }
 
 func (p *Passthrough) restoreTerminal() {
@@ -309,9 +411,11 @@ func (p *Passthrough) restoreTerminal() {
 
 func (p *Passthrough) stop() {
 	p.stopOnce.Do(func() {
-		logger.Printf("Passthrough: stop() called")
-		close(p.quit)
+		logger.Printf("Passthrough.stop: called, stopping exit watcher and closing quit channel")
 		p.stopExitWatcher()
+		logger.Printf("Passthrough.stop: exit watcher stopped")
+		close(p.quit)
+		logger.Printf("Passthrough.stop: quit channel closed")
 	})
 }
 

@@ -253,11 +253,10 @@ func (p *AgentPool) GetOrCreate(agentType string, opts ...AgentOption) (*AgentIn
 		}
 		instance.OutputMu.Lock()
 		instance.OutputBuffer.Write(data)
-		sink := instance.OutputSink
-		instance.OutputMu.Unlock()
-		if sink != nil {
-			_, _ = sink.Write(data)
+		if instance.OutputSink != nil {
+			_, _ = instance.OutputSink.Write(data)
 		}
+		instance.OutputMu.Unlock()
 	})
 	proxy.SetExitHandler(func(err error) {
 		if err != nil {
@@ -442,4 +441,53 @@ func (ai *AgentInstance) SendHintOnce(message string) error {
 	}
 	_, err := ai.Proxy.Write([]byte(message + "\n"))
 	return err
+}
+
+func (p *AgentPool) Shutdown() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	runningAgents := 0
+	for _, agent := range p.agents {
+		if agent.Status == StatusRunning {
+			runningAgents++
+		}
+	}
+
+	if runningAgents == 0 {
+		logger.Printf("AgentPool: no running agents to shutdown")
+		return nil
+	}
+
+	logger.Printf("AgentPool: shutting down %d agent(s)...", runningAgents)
+	fmt.Printf("  Stopping %d agent(s)...\n", runningAgents)
+
+	count := 0
+	for id, agent := range p.agents {
+		if agent.Status == StatusRunning && agent.Proxy != nil {
+			count++
+			logger.Printf("AgentPool: stopping agent %s (%d/%d)", id, count, runningAgents)
+			fmt.Printf("  [%d/%d] Stopping %s... ", count, runningAgents, id)
+
+			_ = agent.Proxy.Stop()
+
+			// Final wait for shutdown status synchronization
+			startWait := time.Now()
+			for agent.Proxy.Status() != ptyproxy.StatusStopped {
+				if time.Since(startWait) > 3*time.Second {
+					logger.Printf("AgentPool: timeout waiting for agent %s to stop", id)
+					fmt.Printf("\033[33mtimeout\033[0m\n")
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+
+			if agent.Proxy.Status() == ptyproxy.StatusStopped {
+				fmt.Printf("\033[32mok\033[0m\n")
+			}
+		}
+	}
+
+	logger.Printf("AgentPool: shutdown complete")
+	return nil
 }

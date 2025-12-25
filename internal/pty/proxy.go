@@ -5,7 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
+	"time"
 
+	"github.com/biliqiqi/ac2/internal/logger"
 	"github.com/creack/pty"
 )
 
@@ -194,8 +197,30 @@ func (p *Proxy) Stop() error {
 	defer p.mu.Unlock()
 
 	if p.cmd != nil && p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
+		logger.Printf("Proxy.Stop: attempting graceful shutdown with SIGTERM for PID %d", p.cmd.Process.Pid)
+
+		// Try graceful shutdown with SIGTERM first
+		if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			logger.Printf("Proxy.Stop: SIGTERM failed: %v, will use SIGKILL", err)
+			_ = p.cmd.Process.Kill()
+		} else {
+			// Wait up to 1 second for graceful exit
+			done := make(chan error, 1)
+			go func() {
+				_, err := p.cmd.Process.Wait()
+				done <- err
+			}()
+
+			select {
+			case <-done:
+				logger.Printf("Proxy.Stop: process exited gracefully")
+			case <-time.After(3 * time.Second):
+				logger.Printf("Proxy.Stop: graceful shutdown timeout, forcing with SIGKILL")
+				_ = p.cmd.Process.Kill()
+			}
+		}
 	}
+
 	if p.ptmx != nil {
 		_ = p.ptmx.Close()
 	}

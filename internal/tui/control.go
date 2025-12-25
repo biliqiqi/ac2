@@ -60,6 +60,21 @@ func (c *ControlMode) Run() Action {
 	return c.action
 }
 
+func (c *ControlMode) RunExitConfirm() Action {
+	c.app = tview.NewApplication()
+
+	root := c.buildUI()
+	c.app.SetRoot(root, true)
+	c.app.EnableMouse(false)
+	c.showExitConfirm(true)
+
+	if err := c.app.Run(); err != nil {
+		return Action{Type: ActionResume}
+	}
+
+	return c.action
+}
+
 func (c *ControlMode) buildUI() tview.Primitive {
 	statusView := tview.NewTextView()
 	statusView.SetDynamicColors(true)
@@ -319,7 +334,7 @@ func (c *ControlMode) showError(message string) {
 	c.app.SetRoot(modal, true)
 }
 
-func (c *ControlMode) showExitConfirm() {
+func (c *ControlMode) showExitConfirm(resumeOnCancel bool) {
 	modal := tview.NewModal()
 	back := c.buildUI()
 	c.styleModal(modal, back)
@@ -328,6 +343,12 @@ func (c *ControlMode) showExitConfirm() {
 	modal.SetDoneFunc(func(buttonIndex int, buttonLabel string) {
 		switch buttonIndex {
 		case 0: // Cancel
+			if resumeOnCancel {
+				c.restoreMenuCapture()
+				c.action = Action{Type: ActionResume}
+				c.app.Stop()
+				return
+			}
 			c.restoreMenuCapture()
 			c.app.SetRoot(c.buildUI(), true)
 		case 1: // Quit
@@ -336,6 +357,18 @@ func (c *ControlMode) showExitConfirm() {
 			c.app.Stop()
 		}
 	})
+
+	if resumeOnCancel {
+		modal.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+			if event.Key() == tcell.KeyEscape {
+				c.restoreMenuCapture()
+				c.action = Action{Type: ActionResume}
+				c.app.Stop()
+				return nil
+			}
+			return event
+		})
+	}
 
 	c.app.SetRoot(modal, true)
 }
@@ -355,7 +388,7 @@ func (c *ControlMode) handleQuit() {
 		return
 	}
 
-	c.showExitConfirm()
+	c.showExitConfirm(false)
 }
 
 func (c *ControlMode) showHelp() {

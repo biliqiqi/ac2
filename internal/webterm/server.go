@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/biliqiqi/ac2/internal/logger"
 	ptyproxy "github.com/biliqiqi/ac2/internal/pty"
 	"github.com/gorilla/websocket"
 )
@@ -225,19 +226,35 @@ func (s *Server) checkActivityTimeout() {
 }
 
 func (s *Server) Stop() error {
+	logger.Printf("WebServer.Stop: called")
+
 	if s.proxy != nil {
+		logger.Printf("WebServer.Stop: removing output handler")
 		s.proxy.RemoveOutputHandler(s.handlerID)
 	}
 
 	s.clientsMu.Lock()
-	for _, client := range s.clients {
+	clientCount := len(s.clients)
+	logger.Printf("WebServer.Stop: closing %d client(s)", clientCount)
+	for id, client := range s.clients {
+		logger.Printf("WebServer.Stop: closing client %s", id)
 		client.Close()
 	}
 	s.clientsMu.Unlock()
+	logger.Printf("WebServer.Stop: all clients closed")
 
 	if s.httpServer != nil {
-		return s.httpServer.Close()
+		logger.Printf("WebServer.Stop: closing HTTP server")
+		err := s.httpServer.Close()
+		if err != nil {
+			logger.Printf("WebServer.Stop: HTTP server close error: %v", err)
+		} else {
+			logger.Printf("WebServer.Stop: HTTP server closed successfully")
+		}
+		return err
 	}
+
+	logger.Printf("WebServer.Stop: no HTTP server to close")
 	return nil
 }
 
