@@ -24,9 +24,10 @@ Add to Claude Code with:
 
     claude mcp add --transport stdio ac2 "ac2 mcp-stdio"
 
-Then you can use tools with slash commands:
-    /ac2:call_agent
-    /ac2:list_agents
+Then you can use tools with slash commands like:
+    /ac2:ask-claude
+    /ac2:ask-gemini
+    /ac2:ask-codex
 `,
 		RunE: runMCPStdio,
 	}
