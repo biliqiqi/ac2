@@ -31,8 +31,9 @@ go.work.sum
 # .idea/
 # .vscode/
 
-ac2
-!ac2/*
+/ac2
+!/ac2/
+!/ac2/**
 *~
 *.log
 
